@@ -70,7 +70,7 @@ int main()
         
         /* computes the checksum of a cached block */
         for (uint32_t cache_idx = 0; cache_idx < BLOCK_SIZE; cache_idx++) {
-            count += 1;
+            //count += 1;
 
             checksum += cache[cache_idx];
         }
@@ -79,7 +79,7 @@ int main()
     /* keep the 32-bit LSB on the 64-bit cycle counter */
     result->cycles = (uint32_t)perfcounter_get();
     result->checksum = checksum;
-    result->counts = count;
+    //result->counts = count;
 
     printf("[%02d] Checksum = 0x%08x AND Counts = %d\n", tasklet_id, result->checksum, count);
     return 0;
