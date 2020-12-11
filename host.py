@@ -17,6 +17,7 @@
 
 from dpu import DpuSet
 from dpu import ALLOCATE_ALL
+from io import StringIO
 import argparse
 import os
 import random
@@ -26,9 +27,10 @@ import sys
 DPU_BINARY = 'dpu'
 
 DPU_BUFFER = 'dpu_mram_buffer'
+DPU_BUFFER2 = 'dpu_mram_buffer2'
 DPU_RESULTS = 'dpu_wram_results'
 BUFFER_SIZE = 8 << 20
-RESULT_SIZE = 12 # 4 for each new stuct var
+RESULT_SIZE = 8
 
 ANSI_COLOR_RED = '\x1b[31m'
 ANSI_COLOR_GREEN = '\x1b[32m'
@@ -41,17 +43,19 @@ def main(nr_dpus, nr_tasklets):
     with DpuSet(nr_dpus, binary = DPU_BINARY, log = sys.stdout) as dpus:
         print('Allocated {} DPU(s)'.format(len(dpus)))
 
-        # must send 256 bytes at a time so pad with zeros, mark new line with x0D
-        #num_list = [1,2,3,4,5]
-        #num_length = len(num_list)
-        #test_file = bytearray(256-num_length) + bytearray(num_list)
-        #print(test_file)
-
-        theor, test_file = create_test_file()
+        # Create an "input file" with arbitrary data.
+        # Compute its theoretical checksum value.
+        theoretical_checksum, test_file = create_test_file()
+        dpus.nRows = bytearray([2,0,0,0,0,0,0,0])
+        dpus.nCols = bytearray([3,0,0,0,0,0,0,0])
+        dpus.pSum = bytearray([0,0,0,0,0,0,0,0])
 
         print('Load input data')
         dpus.copy(DPU_BUFFER, test_file)
-        
+
+        print('Load input data')
+        dpus.copy(DPU_BUFFER2, test_file)
+
         print('Run program on DPU(s)')
         dpus.exec()
 
@@ -62,22 +66,20 @@ def main(nr_dpus, nr_tasklets):
         for dpu, result in zip(dpus, results):
             dpu_checksum = 0
             dpu_cycles = 0
-            dpu_counts = 0
 
             # Retrieve tasklet results and compute the final checksum.
             for task_id in range(nr_tasklets):
-                result_checksum, result_cycles, result_counts = struct.unpack_from("<III", result, task_id * RESULT_SIZE)
+                result_checksum, result_cycles = struct.unpack_from("<II", result, task_id * RESULT_SIZE)
                 dpu_checksum += result_checksum
                 dpu_cycles = max(dpu_cycles, result_cycles)
-                dpu_counts += result_counts
 
             print('DPU execution time  = {:g} cycles'.format(dpu_cycles))
             print('performance         = {:g} cycles/byte'.format(dpu_cycles / BUFFER_SIZE))
             print('checksum computed by the DPU = 0x{:x}'.format(dpu_checksum))
-            print('actual checksum value        = 0x{:x}'.format(theor))
-            print('total counts all dpus        = {:d}'.format(dpu_counts))
+            print('actual checksum value        = 0x{:x}'.format(theoretical_checksum))
+            print('\npSum = \n',dpus.pSum.uint64())
 
-            if dpu_checksum == theor:
+            if dpu_checksum == theoretical_checksum:
                 print('[' + ANSI_COLOR_GREEN + 'OK' + ANSI_COLOR_RESET + '] checksums are equal')
             else:
                 print('[' + ANSI_COLOR_RED + 'ERROR' + ANSI_COLOR_RESET + '] checksums differ!')

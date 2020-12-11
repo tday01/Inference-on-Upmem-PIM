@@ -6,7 +6,9 @@
 
 /* DPU variable that will be read of write by the host */
 #define DPU_BUFFER dpu_mram_buffer
+#define DPU_BUFFER2 dpu_mram_buffer2
 #define DPU_CACHES dpu_wram_caches
+#define DPU_CACHES2 dpu_wram_caches2
 #define DPU_RESULTS dpu_wram_results
 
 /* Size of the buffer on which the checksum will be performed */
@@ -16,12 +18,11 @@
 
 #include <stdint.h>
 
-#define NR_TASKLETS (1)
+#define NR_TASKLETS 1
 
 typedef struct {
     uint32_t checksum;
     uint32_t cycles;
-    uint32_t counts;
 } dpu_result_t;
 
 typedef struct {
