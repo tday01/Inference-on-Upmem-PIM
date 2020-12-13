@@ -1,26 +1,10 @@
 #!/usr/bin/env python3
 
-# Copyright (c) 2020 - UPMEM
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#   http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
-
-
 from dpu import DpuSet
 from dpu import ALLOCATE_ALL
 from io import StringIO
 import argparse
-import os
-import random
+import time
 import struct
 import sys
 
@@ -36,68 +20,82 @@ ANSI_COLOR_RED = '\x1b[31m'
 ANSI_COLOR_GREEN = '\x1b[32m'
 ANSI_COLOR_RESET = '\x1b[0m'
 
-
 def main(nr_dpus, nr_tasklets):
-    ok = True
 
+    start_timer = time.perf_counter()    
     with DpuSet(nr_dpus, binary = DPU_BINARY, log = sys.stdout) as dpus:
-        print('Allocated {} DPU(s)'.format(len(dpus)))
-
-        # Create an "input file" with arbitrary data.
-        # Compute its theoretical checksum value.
-        theoretical_checksum, test_file = create_test_file()
-        dpus.nRows = bytearray([2,0,0,0,0,0,0,0])
-        dpus.nCols = bytearray([3,0,0,0,0,0,0,0])
+        nDpus = len(dpus)
+        print('Allocated {} DPU(s)'.format(nDpus))
+        
+        dpus.nRows = bytearray([16,0,0,0,0,0,0,0])
+        dpus.nCols = bytearray([16,0,0,0,0,0,0,0])
         dpus.pSum = bytearray([0,0,0,0,0,0,0,0])
 
-        print('Load input data')
-        dpus.copy(DPU_BUFFER, test_file)
+        matrix_array =bytearray(
+[0,5,0,0,0,0,2,0,0,4,0,2,0,7,0,0,
+0,0,8,0,0,0,8,2,0,0,0,5,0,0,9,0,
+0,9,0,0,3,0,0,9,0,0,0,8,0,0,0,2,
+0,8,0,0,5,0,0,1,0,0,0,0,0,0,0,0,
+0,0,0,0,9,8,0,0,0,9,5,2,4,0,8,0,
+0,0,0,0,5,0,4,6,0,0,0,7,0,0,0,7,
+4,0,9,0,0,4,0,0,0,0,0,0,0,0,5,3,
+0,0,0,4,0,0,0,0,0,0,5,0,5,6,0,0,
+0,3,0,0,0,0,6,8,9,4,0,3,0,0,0,0,
+6,4,0,0,7,0,0,0,0,0,0,7,2,2,0,0,
+6,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
+0,0,0,0,2,0,0,0,6,0,0,0,0,0,6,0,
+0,0,0,2,0,0,3,8,0,0,5,0,0,3,0,0,
+0,0,6,0,0,0,9,0,5,0,0,0,0,0,0,8,
+0,2,0,0,0,0,0,0,0,3,0,3,8,9,0,0,
+8,0,0,0,5,0,0,8,4,0,0,0,0,3,3,0])
 
-        print('Load input data')
-        dpus.copy(DPU_BUFFER2, test_file)
+        vector_array = bytearray([1,6,0,1,4,8,6,0,6,0,9,6,2,9,0,5])
+        vector_array =  bytearray(vector_array) + bytearray(256-(len(vector_array)))     
+
+        print('Load matrix data')
+        dpus.copy(DPU_BUFFER, matrix_array)
+
+        print('Load vector data')
+        dpus.copy(DPU_BUFFER2, vector_array)
 
         print('Run program on DPU(s)')
         dpus.exec()
 
+        # actual y_vector expected
+        y_vector = [117,78,124,68,165,121,51,113,126,122,6,44,92,124,127,79]
+        y_sum_actual = sum(y_vector)
+
         results = [bytearray(RESULT_SIZE * nr_tasklets) for _ in dpus]
         dpus.copy(results, DPU_RESULTS)
 
-        print('Retrieve results')
+        stop_timer = time.perf_counter()
+        elapsed_time = abs(start_timer - stop_timer)
+
         for dpu, result in zip(dpus, results):
-            dpu_checksum = 0
+            dpu_result = 0
             dpu_cycles = 0
-
-            # Retrieve tasklet results and compute the final checksum.
             for task_id in range(nr_tasklets):
-                result_checksum, result_cycles = struct.unpack_from("<II", result, task_id * RESULT_SIZE)
-                dpu_checksum += result_checksum
-                dpu_cycles = max(dpu_cycles, result_cycles)
+                result_t, cycles = struct.unpack_from("<II", result, task_id * RESULT_SIZE)
+                dpu_result += result_t
+                dpu_cycles = max(dpu_cycles, cycles)
 
-            print('DPU execution time  = {:g} cycles'.format(dpu_cycles))
-            print('performance         = {:g} cycles/byte'.format(dpu_cycles / BUFFER_SIZE))
-            print('checksum computed by the DPU = 0x{:x}'.format(dpu_checksum))
-            print('actual checksum value        = 0x{:x}'.format(theoretical_checksum))
-            print('\npSum = \n',dpus.pSum.uint64())
+            print('\nDPU execution time  = {:g} cycles'.format(dpu_cycles))
+            print('Performance         = {:g} cycles/byte'.format(dpu_cycles / BUFFER_SIZE))
+            print(f'Seconds            = ',round(elapsed_time,2))
+            print('DPU Result          =',dpu_result)
+            print('Expected            =',y_sum_actual)
+            print('pSum                =',dpus.pSum.uint64())
 
-            if dpu_checksum == theoretical_checksum:
-                print('[' + ANSI_COLOR_GREEN + 'OK' + ANSI_COLOR_RESET + '] checksums are equal')
+            if nDpus > 1:
+                y_sum_computed = sum(dpus.pSum.uint64())/nDpus
             else:
-                print('[' + ANSI_COLOR_RED + 'ERROR' + ANSI_COLOR_RESET + '] checksums differ!')
-                ok = False
+                y_sum_computed = dpus.pSum.uint64()
 
-    if not ok:
-        sys.exit(os.EX_SOFTWARE)
-
-
-def create_test_file():
-    random.seed(0)
-    test_file = bytearray([random.randrange(256) for _ in range(BUFFER_SIZE)])
-
-    checksum = sum(test_file)
-
-    return checksum, test_file
-
-
+            if y_sum_actual == y_sum_computed:
+                print('[' + ANSI_COLOR_GREEN + 'PASS' + ANSI_COLOR_RESET + '] Correct Vector Computed')
+            else:
+                print('[' + ANSI_COLOR_RED + 'FAIL' + ANSI_COLOR_RESET + '] Wrong Vector Returned!')
+ 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('nr_dpus')

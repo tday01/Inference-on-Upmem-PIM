@@ -1,39 +1,8 @@
-/*
- * Copyright (c) 2014-2017 - uPmem
- *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
- *
- *   http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
- */
-
-/**
- * An example of checksum computation with multiple tasklets.
- *
- * Every tasklet processes specific areas of the MRAM, following the "rake"
- * strategy:
- *  - Tasklet number T is first processing block number TxN, where N is a
- *    constant block size
- *  - It then handles block number (TxN) + (NxM) where M is the number of
- *    scheduled tasklets
- *  - And so on...
- *
- * The host is in charge of computing the final checksum by adding all the
- * individual results.
- */
 #include <defs.h>
 #include <mram.h>
 #include <perfcounter.h>
 #include <stdint.h>
 #include <stdio.h>
-
 #include "common.h"
 
 /* Use blocks of 256 bytes */
@@ -41,6 +10,9 @@
 
 __dma_aligned uint8_t DPU_CACHES[NR_TASKLETS][BLOCK_SIZE];
 __dma_aligned uint8_t DPU_CACHES2[NR_TASKLETS][BLOCK_SIZE];
+__dma_aligned uint8_t DPU_CACHES3[NR_TASKLETS][BLOCK_SIZE];
+__dma_aligned uint8_t DPU_CACHES4[NR_TASKLETS][BLOCK_SIZE];
+__dma_aligned uint8_t DPU_CACHES5[NR_TASKLETS][BLOCK_SIZE];
 __host dpu_results_t DPU_RESULTS;
 
 __mram uint64_t nRows;
@@ -49,81 +21,107 @@ __mram uint64_t pSum;
 
 __mram_noinit uint8_t DPU_BUFFER[BUFFER_SIZE];
 __mram_noinit uint8_t DPU_BUFFER2[BUFFER_SIZE];
-/*
-void matrix_compress_csr(uint8_t m, uint8_t n, uint8_t matrix[m][n]);
 
-void matrix_compress_csr(uint8_t m, uint8_t n, uint8_t matrix[m][n]){
-    uint8_t totalSize=m*n;
-    uint8_t csr[totalSize]; 
-    uint8_t csrIndex[totalSize]; 
-    uint8_t csrOffset[n+1];
-    uint8_t i, j, k;
-	for (i=0; i<m*n; i++)
-	{
-		csr[i]=0;
-		csrIndex[i]=0;
-	}
-	uint8_t totolElement=0;
-	for (j=0; j<n; j++)
-	{
-		csrOffset[j]=totolElement;
-		for (i=0; i<m; i++)
-		{
-			if(matrix[j][i]!=0)
-			{
-				csr[totolElement]=matrix[j][i];
-				csrIndex[totolElement]=i;				
-				totolElement++;
-			}
-		}
-	}
-	csrOffset[n]=totolElement;
-}
-*/
+__mram_noinit uint8_t csr[BLOCK_SIZE];
+__mram_noinit uint8_t csrIndex[BLOCK_SIZE];
+__mram_noinit uint8_t csrOffset[BLOCK_SIZE/2];
+__mram_noinit uint8_t matrix[BLOCK_SIZE/2][BLOCK_SIZE/2];
+__mram_noinit uint8_t y[BLOCK_SIZE/2];
 
-/**
- * @fn main
- * @brief main function executed by each tasklet
- * @return the checksum result
- */
+// CSR ARRAYS
+//uint8_t __dma_aligned csr[BLOCK_SIZE];
+//uint8_t __dma_aligned csrIndex[BLOCK_SIZE];
+//uint8_t __dma_aligned csrOffset[BLOCK_SIZE/2];
+//uint8_t __dma_aligned matrix[BLOCK_SIZE/2][BLOCK_SIZE/2];
+//uint8_t __dma_aligned y[BLOCK_SIZE/2];
+
 int main()
 {
     uint32_t tasklet_id = me();
-    uint8_t *cache = DPU_CACHES[tasklet_id];
-    uint8_t *cache2 = DPU_CACHES2[tasklet_id];
+    uint8_t *cache_index = DPU_CACHES[tasklet_id];
+    uint8_t *cache_val = DPU_CACHES2[tasklet_id];
+    uint8_t *cache_ptr = DPU_CACHES3[tasklet_id];
+    uint8_t *cache_y = DPU_CACHES4[tasklet_id];
+    uint8_t *cache_x = DPU_CACHES5[tasklet_id];
     dpu_result_t *result = &DPU_RESULTS.tasklet_result[tasklet_id];
-    uint32_t checksum = 0;
-    uint64_t tmp_sum = 0;
+    uint32_t result_t = 0;
+    uint8_t m = nRows;
+    uint8_t n = nCols;
+    uint8_t totalSize=m*n;
+    uint8_t i, j, k;
 
-    //uint64_t data = nRows;
-    //uint64_t data2 = nCols;
-    //nRows = data*data2;
-    nRows = nRows * nCols;
-
-    /* Initialize once the cycle counter */
     if (tasklet_id == 0)
         perfcounter_config(COUNT_CYCLES, true);
+    
+    for (j=0, k=0; j<m; j++){
+        for (i=0; i<n; i++){
+            matrix[j][i] = DPU_BUFFER[k];
+            k++;            
+        }
+    }
+
+    // matrix compression, CSR //
+    uint8_t totolElement=0;
+    for (j=0; j<n; j++){
+        csrOffset[j]=totolElement;
+        for (i=0; i<m; i++){
+	    if(matrix[j][i]!=0){
+	        csr[totolElement]=matrix[j][i];
+		csrIndex[totolElement]=i;				
+		totolElement++;
+	    }
+	}
+    }
+    csrOffset[n]=totolElement;
+
+/*
+    // SpMV CSR //
+    uint8_t temp;
+    for(i = 0; i < nRows ; i++){
+      temp = y[i];
+      for(j = csrOffset[i]; j < csrOffset[i+1]; j++){
+        temp += csr[j] * DPU_BUFFER2[csrIndex[j]];
+      }
+      y[i] = temp;
+    }
+*/
 
     for (uint32_t buffer_idx = tasklet_id * BLOCK_SIZE; buffer_idx < BUFFER_SIZE; buffer_idx += (NR_TASKLETS * BLOCK_SIZE)) {
 
         /* load cache with current mram block. */
-        mram_read(&DPU_BUFFER[buffer_idx], cache, BLOCK_SIZE);
-        mram_read(&DPU_BUFFER2[buffer_idx], cache2, BLOCK_SIZE);
+        mram_read(&csrIndex[buffer_idx], cache_index, BLOCK_SIZE);
+        mram_read(&csr[buffer_idx], cache_val, BLOCK_SIZE);
+        mram_read(&csrOffset[buffer_idx], cache_ptr, BLOCK_SIZE);
+        mram_read(&DPU_BUFFER2[buffer_idx], cache_x, BLOCK_SIZE);
+        //mram_read(&y[buffer_idx], cache_y, BLOCK_SIZE);
 
-        /* computes the checksum of a cached block */
-        for (uint32_t cache_idx = 0; cache_idx < BLOCK_SIZE; cache_idx++) {
-            tmp_sum += (cache[cache_idx] + cache2[cache_idx]);
-            
-            checksum += cache[cache_idx];
-        }
+        // SpMV CSR //
+        uint8_t temp;
+        for(i = 0; i < nRows ; i++){
+            temp = y[i];
+            for(j = cache_ptr[i]; j < cache_ptr[i+1]; j++){
+                temp += cache_val[j] * DPU_BUFFER2[cache_index[j]];
+            }
+            y[i] = temp;
+        }   
     }
 
     /* keep the 32-bit LSB on the 64-bit cycle counter */
     result->cycles = (uint32_t)perfcounter_get();
-    result->checksum = checksum;
-    pSum = tmp_sum;
+    result->result_t = result_t;
+    pSum = 0;
+    for (i=0; i < nRows; i++){
+        pSum += y[i];
+    }
 
-    printf("\nrpSum = %lu\n", pSum);
-    //printf("[%02d] Checksum = 0x%08x\n", tasklet_id, result->checksum);
+    //printf("\npSum ON DPU = %lu\n", pSum);
+    printf("Computed y Vector:\n");
+    for(int i = 0; i < nRows; i++) {
+        //for(int j = 0; j < nCols; j++) {
+            printf("%d,", y[i]);
+    //}
+    } 
+
+    //printf("[%02d] y0 = %d\n", tasklet_id, y[0]);
     return 0;
 }
